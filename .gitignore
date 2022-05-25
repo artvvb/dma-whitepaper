@@ -1,0 +1,25 @@
+# root
+/*
+!.gitignore
+!README.md
+!LICENSE
+!sw-scripts
+
+!hw
+hw/*
+!hw/dma_topologies.srcs
+hw/dma_topologies.srcs/*/bd
+!hw/dma_topologies.gen
+hw/dma_topologies.gen/*
+!hw/dma_topologies.gen/sources_1
+hw/dma_topologies.gen/sources_1/*
+!hw/dma_topologies.gen/sources_1/bd
+hw/dma_topologies.gen/sources_1/bd/*
+!hw/dma_topologies.gen/sources_1/bd/design_1
+hw/dma_topologies.gen/sources_1/bd/design_1/*
+!hw/dma_topologies.gen/sources_1/bd/design_1/hw_handoff
+hw/dma_topologies.gen/sources_1/bd/design_1/hw_handoff/*
+!hw/dma_topologies.gen/sources_1/bd/design_1/hw_handoff/design_1_bd.tcl
+!hw/checkout.tcl
+
+!hw_handoff
