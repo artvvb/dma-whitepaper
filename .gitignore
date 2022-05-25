@@ -3,7 +3,8 @@
 !.gitignore
 !README.md
 !LICENSE
-!sw-scripts
+!sw
+sw/ws/*
 
 !hw
 hw/*
