@@ -1,0 +1,3 @@
+[submodule "sw-scripts"]
+	path = sw-scripts
+	url = https://github.com/digilent/digilent-vitis-scripts
