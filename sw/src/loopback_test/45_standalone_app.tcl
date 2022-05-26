@@ -21,7 +21,7 @@ set sysproj "loopback_test_system"
 
 # Handle dependent variables
 if {$lang == "c"} {
-	set template "Empty Application"
+	set template "Empty Application(C)"
 } elseif {$lang == "c++"} {
 	set template "Empty Application (C++)"
 } else {
