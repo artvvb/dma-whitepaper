@@ -1,6 +1,1 @@
-# root
-*
-!hw
-!sw
-!.gitignore
-!.gitmodules
+# let subdirectories handle their own ignores
