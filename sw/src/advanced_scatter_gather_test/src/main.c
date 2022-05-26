@@ -6,6 +6,9 @@
 #include "trigger.h"
 
 #define DMA_ID XPAR_ADVANCED_SCATTER_GATHER_0_AXI_DMA_1_DEVICE_ID
+#define DMA_BURST_SIZE XPAR_ADVANCED_SCATTER_GATHER_0_AXI_DMA_1_S2MM_BURST_SIZE
+#define DMA_DATA_WIDTH XPAR_ADVANCED_SCATTER_GATHER_0_AXI_DMA_1_M_AXI_S2MM_DATA_WIDTH
+
 
 #define TRAFFIC_CTRL_ID XPAR_STREAM_SOURCE_TO_ADVANCED_SCATTER_GATHER_0_CTRL_0_DEVICE_ID
 #define TRAFFIC_CTRL_FREERUN_BIT 2
@@ -195,7 +198,8 @@ int main () {
 	AllocateBuffer(&Dma, BufferLength * sizeof(u32), &RxBuffer, &RxBdSpace);
 
 	// Set up the Dma transfer
-	const u32 MaxBurstLengthBytes = 256;
+//	const u32 MaxBurstLengthBytes = 0x200;
+	const u32 MaxBurstLengthBytes = DMA_BURST_SIZE * DMA_DATA_WIDTH / 8;
 	const u32 NumBds = RoundUpDivide(BufferLength * sizeof(u32), MaxBurstLengthBytes);
 	SgInitialize(&Dma, MaxBurstLengthBytes, NumBds, RX0_BD_SPACE_BASE, RX0_BD_SPACE_HIGH, (UINTPTR)RxBuffer, 0);
 
