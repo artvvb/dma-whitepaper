@@ -2,6 +2,8 @@
 #include "xgpio.h"
 #include "xaxidma.h"
 #include "xil_printf.h"
+#include "sleep.h"
+#include "trigger.h"
 
 #define DMA_ID XPAR_ADVANCED_SCATTER_GATHER_0_AXI_DMA_1_DEVICE_ID
 
@@ -12,19 +14,6 @@
 
 #define MANUAL_TRIGGER_ID XPAR_ADVANCED_SCATTER_GATHER_TRIGGER_0_MANUAL_TRIGGER_0_DEVICE_ID
 #define MANUAL_TRIGGER_CHANNEL 1
-
-#define TRIGGER_CONFIG_ID XPAR_ADVANCED_SCATTER_GATHER_TRIGGER_0_CFG_0_DEVICE_ID
-#define TRIGGER_CONFIG_ENABLE_CHANNEL 1
-#define TRIGGER_CONFIG_DETECTED_CHANNEL 2
-
-#define TRIGGER_CTRL_ID XPAR_ADVANCED_SCATTER_GATHER_TRIGGER_0_CTRL_0_DEVICE_ID
-#define TRIGGER_CTRL_CHANNEL 1
-#define TRIGGER_CTRL_START_BIT 1
-#define TRIGGER_CTRL_IDLE_BIT 2
-
-#define TRIGGER_COUNTER_CONFIG_ID XPAR_ADVANCED_SCATTER_GATHER_TRIGGER_0_COUNTER_CFG_0_DEVICE_ID
-#define TRIGGER_COUNTER_CONFIG_TRIG_TO_LAST_BEATS_CHANNEL 1
-#define TRIGGER_COUNTER_CONFIG_PREBUFFER_BEATS_CHANNEL 2
 
 // Buffer Memory Allocation
 #define DDR_BASE_ADDR       XPAR_PS7_DDR_0_S_AXI_BASEADDR
@@ -59,7 +48,7 @@ u32 *InitializeBuffer (XAxiDma *InstPtr, u32 BufferLengthBytes) {
 	return RxBuffer;
 }
 
-void SgInitialize (XAxiDma *instptr, u32 MaxBurstLength, u32 num_bds, u32 bd_space_base, u32 bd_space_high, UINTPTR buffer_base, u32 stride) {
+void SgInitialize (XAxiDma *instptr, u32 MaxBurstLengthBytes, u32 num_bds, u32 bd_space_base, u32 bd_space_high, UINTPTR buffer_base, u32 stride) {
 	XAxiDma_BdRing *ringptr;
 	int coalesce = 1;
 	int delay = 0;
@@ -107,7 +96,7 @@ void SgInitialize (XAxiDma *instptr, u32 MaxBurstLength, u32 num_bds, u32 bd_spa
 
 	for (Index = 0; Index < FreeBdCount; Index++) {
 		u32 BdId = RxBufferPtr;
-		u32 BdLength = MaxBurstLength * sizeof(u32);
+		u32 BdLength = MaxBurstLengthBytes;
 		u32 BdCtrl = 0;
 
 		Status = XAxiDma_BdSetBufAddr(BdCurPtr, RxBufferPtr);
@@ -149,96 +138,100 @@ void SgStartReceiveTransfer (XAxiDma *InstPtr) {
 	}
 }
 
+u32 *FindStartOfBuffer (XAxiDma *InstPtr, u32 NumBds, u32 MaxBurstLengthBytes) {
+	XAxiDma_BdRing *RingPtr = XAxiDma_GetRxRing(InstPtr);
+	XAxiDma_Bd *BdPtr;
+	u32 ActualLength;
+
+	BdPtr = (XAxiDma_Bd*)RingPtr->FirstBdAddr; // this is kind of weird. FIXME find out why this value isn't the one getting returned from BdRingFree
+
+	for (u32 i = 0; i < NumBds; i++) {
+		Xil_DCacheInvalidateRange((UINTPTR)BdPtr, XAXIDMA_BD_NUM_WORDS * sizeof(u32));
+
+		XAxiDma_DumpBd(BdPtr);
+
+		u32 Status = XAxiDma_BdGetSts(BdPtr);
+		// RXEOF bit high indicates that tlast occured in that block
+		if (Status & XAXIDMA_BD_STS_RXEOF_MASK) {
+			ActualLength = XAxiDma_BdGetActualLength(BdPtr, ((MaxBurstLengthBytes*2)-1));
+			xil_printf("Last beat found:\r\n");
+			xil_printf("  BD base address: %08x\r\n", XAxiDma_BdGetBufAddr(BdPtr));
+			xil_printf("  BD actual length: %08x\r\n", ActualLength);
+			return (u32*)(XAxiDma_BdGetBufAddr(BdPtr) + ActualLength);
+		}
+
+		// Advance the pointer to the next descriptor
+		BdPtr = (XAxiDma_Bd *)XAxiDma_BdRingNext(RingPtr, BdPtr);
+	}
+	return 0;
+}
+
 int main () {
 	// Initialize device drivers
 	XAxiDma Dma;
 	XGpio TrafficCtrlGpio;
 	XGpio ManualTriggerGpio;
-	XGpio TriggerConfigGpio;
-	XGpio TriggerCtrlGpio;
-	XGpio TriggerCounterConfigGpio;
+	TriggerController Trig;
 
+	TriggerControllerInitialize(&Trig, TRIGGER_CONFIG_ID, TRIGGER_CTRL_ID, TRIGGER_COUNTER_CONFIG_ID);
 	InitializeDma(&Dma, DMA_ID);
 	InitializeGpio(&TrafficCtrlGpio, TRAFFIC_CTRL_ID);
 	InitializeGpio(&ManualTriggerGpio, MANUAL_TRIGGER_ID);
-	InitializeGpio(&TriggerConfigGpio, TRIGGER_CONFIG_ID);
-	InitializeGpio(&TriggerCtrlGpio, TRIGGER_CTRL_ID);
-	InitializeGpio(&TriggerCounterConfigGpio, TRIGGER_COUNTER_CONFIG_ID);
+
+	// Define the acquisition window
+	const u32 BufferLength = 1024;
+	const u32 TriggerPosition = 200;
 
 	// Initialize the buffer for receiving data from PL
-	const u32 BufferLength = 65536;
-	const u32 TriggerPosition = 200;
-	const u32 PrebufferLength = TriggerPosition;
-	const u32 TrigToLastLength = BufferLength - TriggerPosition;
-	const u32 BufferLengthBytes = BufferLength * sizeof(u32);
-	u32 *RxBuffer = InitializeBuffer(&Dma, BufferLengthBytes);
+	u32 *RxBuffer = InitializeBuffer(&Dma, BufferLength * sizeof(u32));
 
 	// Set up the Dma transfer
-	const u32 MaxBurstLength = 256;
-	const u32 NumBds = RoundUpDivide(BufferLength, MaxBurstLength);
-	SgInitialize(&Dma, MaxBurstLength, NumBds, RX0_BD_SPACE_BASE, RX0_BD_SPACE_HIGH, (UINTPTR)RxBuffer, 0);
+	const u32 MaxBurstLengthBytes = 256;
+	const u32 NumBds = RoundUpDivide(BufferLength * sizeof(u32), MaxBurstLengthBytes);
+	SgInitialize(&Dma, MaxBurstLengthBytes, NumBds, RX0_BD_SPACE_BASE, RX0_BD_SPACE_HIGH, (UINTPTR)RxBuffer, 0);
 
 	// Flush the cache before any transfer
-	Xil_DCacheFlushRange((UINTPTR)RxBuffer, BufferLengthBytes);
+	Xil_DCacheFlushRange((UINTPTR)RxBuffer, BufferLength * sizeof(u32));
 
 	// Configure the trigger
-	XGpio_DiscreteWrite(&TriggerCounterConfigGpio, TRIGGER_COUNTER_CONFIG_TRIG_TO_LAST_BEATS_CHANNEL, TrigToLastLength);
-	XGpio_DiscreteWrite(&TriggerCounterConfigGpio, TRIGGER_COUNTER_CONFIG_PREBUFFER_BEATS_CHANNEL, PrebufferLength);
-	XGpio_DiscreteWrite(&TriggerConfigGpio, TRIGGER_CONFIG_ENABLE_CHANNEL, 0xFFFFFFFF);
+	TriggerSetPosition (&Trig, BufferLength, TriggerPosition);
+	TriggerSetEnable (&Trig, 0xFFFFFFFF);
 
 	xil_printf("Initialization done\r\n");
 
+	// Start up the input pipeline from back to front
 	// Start the DMA receive
 	SgStartReceiveTransfer(&Dma);
 
 	// Start the trigger hardware
-	XGpio_DiscreteWrite(&TriggerCtrlGpio, TRIGGER_CTRL_CHANNEL, TRIGGER_CTRL_START_BIT);
-	XGpio_DiscreteWrite(&TriggerCtrlGpio, TRIGGER_CTRL_CHANNEL, 0);
+	TriggerStart(&Trig);
 
 	// Enable the traffic generator
 	XGpio_DiscreteWrite(&TrafficCtrlGpio, TRAFFIC_CTRL_CHANNEL, TRAFFIC_CTRL_ENABLE_BIT);
 
 	// Wait for the receive transfer to complete
-	u32 BufferHeadIndex = 0;
-	u32 TriggerDetected = 0;
 
-	u32 trig_time = 300;
+	// Apply a manual trigger
+//	usleep(1);
+	u32 trigtime = 0;
+	while (trigtime++ < 100);
+	XGpio_DiscreteWrite(&ManualTriggerGpio, MANUAL_TRIGGER_CHANNEL, 0x1);
 
-	while (1) {
-		if (trig_time > 0) {
-			trig_time--;
-		} else {
-			XGpio_DiscreteWrite(&ManualTriggerGpio, MANUAL_TRIGGER_CHANNEL, 0x1);
-			break;
-		}
-	};
+	// wait for trigger hardware to go idle
+	while (TriggerGetIdle(&Trig)); // FIXME polarity seems wrong?
 
-	// wait for trigger hardware to go idle. should be immediate
-	while (!(XGpio_DiscreteRead(&TriggerCtrlGpio, TRIGGER_CTRL_CHANNEL) & TRIGGER_CTRL_IDLE_BIT));
+//	XAxiDma_Pause(&Dma);
 
-	XAxiDma_Pause(&Dma);
-	XAxiDma_BdRing *RingPtr = XAxiDma_GetRxRing(&Dma);
-	XAxiDma_Bd *BdPtr, *BdCurPtr;
-	u32 ProcessedBdCount = XAxiDma_BdRingFromHw(RingPtr, XAXIDMA_ALL_BDS, &BdPtr);
-	XAxiDma_BdRingFree(RingPtr, ProcessedBdCount, BdPtr);
-	BdCurPtr = BdPtr;
-	BdCurPtr = RingPtr->FreeHead; // this is kind of weird. should probably find out why this value isn't the one getting returned from BdRingFree
-	for (u32 i = 0; i < NumBds; i++) {
-		Xil_DCacheInvalidateRange((UINTPTR)BdCurPtr, XAXIDMA_BD_NUM_WORDS * sizeof(u32));
-		XAxiDma_DumpBd(BdCurPtr);
-		BdCurPtr = (XAxiDma_Bd *)XAxiDma_BdRingNext(RingPtr, BdCurPtr);
-		u32 Status = XAxiDma_BdGetSts(BdCurPtr);
-		// check the tlast bit
-		if (Status & XAXIDMA_BD_STS_RXEOF_MASK) {
-			u32 ActualLength = XAxiDma_BdGetActualLength(BdCurPtr, (MaxBurstLength*sizeof(u32)*2)-1);
-			xil_printf("Last beat found:\r\n");
-			xil_printf("  BD base address: %08x\r\n", XAxiDma_BdGetBufAddr(BdCurPtr));
-			xil_printf("  BD actual length: %08x\r\n", ActualLength);
-			BufferHeadIndex = (((u32)XAxiDma_BdGetBufAddr(BdCurPtr) + (u32)(ActualLength) - (u32)RxBuffer) / sizeof(u32)) % BufferLength;
-		}
+	u32 *BufferHeadPtr = FindStartOfBuffer(&Dma, NumBds, MaxBurstLengthBytes);
+	if (BufferHeadPtr == NULL) {
+		xil_printf("ERROR: No buffer head detected\r\n");
 	}
 
-	TriggerDetected = XGpio_DiscreteRead(&TriggerConfigGpio, TRIGGER_CONFIG_DETECTED_CHANNEL);
+	u32 BufferHeadIndex = (((u32)BufferHeadPtr - (u32)RxBuffer) / sizeof(u32)) % BufferLength;
+
+//	XAxiDma_Resume(&Dma);
+
+	u32 TriggerDetected = TriggerGetDetected(&Trig);
 
 	xil_printf("Buffer base address: %08x\r\n", RxBuffer);
 	xil_printf("Length of buffer (words): %d\r\n", BufferLength);
@@ -248,7 +241,7 @@ int main () {
 	xil_printf("Detected trigger condition: %08x\r\n", TriggerDetected);
 
 	// Invalidate the cache to ensure acquired data can be read
-	Xil_DCacheInvalidateRange((UINTPTR)RxBuffer, BufferLengthBytes);
+	Xil_DCacheInvalidateRange((UINTPTR)RxBuffer, BufferLength * sizeof(u32));
 
 	xil_printf("Transfer done\r\n");
 
