@@ -48,6 +48,8 @@ void InitializeGpio (XGpio *InstPtr, const u32 DeviceId) {
 	XGpio_CfgInitialize(InstPtr, GpioCfgPtr, GpioCfgPtr->BaseAddress);
 }
 
+#define RoundUpDivide(a, b) ((a / b) + (a % b != 0))
+
 u32 *InitializeBuffer (XAxiDma *InstPtr, u32 BufferLengthBytes) {
 	u32 *RxBuffer = malloc(BufferLengthBytes);
 	memset(RxBuffer, 0, BufferLengthBytes);
@@ -147,70 +149,6 @@ void SgStartReceiveTransfer (XAxiDma *InstPtr) {
 	}
 }
 
-u32 CheckLast(XAxiDma_Bd *BdPtr, u32 MaxTransferLen, u32 **BufferHeadPtr) {
-	u32 Status = XAxiDma_BdGetSts(BdPtr);
-
-	if (Status & XAXIDMA_BD_STS_RXEOF_MASK) {
-		*BufferHeadPtr = XAxiDma_BdGetBufAddr(BdPtr) + (XAxiDma_BdGetActualLength(BdPtr, MaxTransferLen) / sizeof(u32));
-		return 1;
-	} else {
-		return 0;
-	}
-}
-
-u32 SgProcessBlocks_UntilLast (XAxiDma *InstPtr, u32 Resubmit, u32 *ProcessedBdCountPtr, u32 **BufferHeadPtr) {
-	XAxiDma_BdRing *RingPtr;
-	XAxiDma_Bd *BdPtr;
-	XAxiDma_Bd *BdCurPtr;
-	int Status;
-	u32 Last = 0;
-
-	RingPtr = XAxiDma_GetRxRing(InstPtr);
-
-	*ProcessedBdCountPtr = XAxiDma_BdRingFromHw(RingPtr, XAXIDMA_ALL_BDS, &BdPtr);
-
-	if (*ProcessedBdCountPtr > 0) {
-		Status = XAxiDma_BdRingFree(RingPtr, *ProcessedBdCountPtr, BdPtr);
-		if (Status != XST_SUCCESS) {
-			xil_printf("XAxiDma_BdRingFree failed %d for dma 0x%08x\r\n", Status, InstPtr);
-		}
-
-		BdCurPtr = BdPtr;
-		for (u32 i = 0; i < *ProcessedBdCountPtr && Last == 0; i++) {
-			Last = CheckLast(BdCurPtr, RingPtr->MaxTransferLen, BufferHeadPtr);
-			BdCurPtr = (XAxiDma_Bd *)XAxiDma_BdRingNext(RingPtr, BdCurPtr);
-		}
-
-		// reallocate the same number of BDs
-		Status = XAxiDma_BdRingAlloc(RingPtr, *ProcessedBdCountPtr, &BdPtr);
-		if (Status != XST_SUCCESS) {
-			xil_printf("XAxiDma_BdRingAlloc failed for dma 0x%08x\r\n", InstPtr);
-		}
-
-		// send the BDs back to hardware to await the next transfer
-		// note that they keep the same buffer addresses
-		// the next transfer should not be initiated until data has been copied out of the buffer
-		if (Resubmit) {
-			Status = XAxiDma_BdRingToHw(RingPtr, *ProcessedBdCountPtr, BdPtr);
-			if (Status != XST_SUCCESS) {
-				xil_printf("XAxiDma_BdRingToHw failed for dma 0x%08x\r\n", InstPtr);
-			}
-		}
-
-		return Last;
-	}
-
-	return 0;
-}
-
-u32 u32_ceil (u32 a, u32 b) {
-	if (a % b == 0) {
-		return a / b;
-	} else {
-		return (a / b) + 1;
-	}
-}
-
 int main () {
 	// Initialize device drivers
 	XAxiDma Dma;
@@ -228,7 +166,7 @@ int main () {
 	InitializeGpio(&TriggerCounterConfigGpio, TRIGGER_COUNTER_CONFIG_ID);
 
 	// Initialize the buffer for receiving data from PL
-	const u32 BufferLength = 1024; // max bytes = 2 ** DMA buffer length register
+	const u32 BufferLength = 65536;
 	const u32 TriggerPosition = 200;
 	const u32 PrebufferLength = TriggerPosition;
 	const u32 TrigToLastLength = BufferLength - TriggerPosition;
@@ -237,7 +175,7 @@ int main () {
 
 	// Set up the Dma transfer
 	const u32 MaxBurstLength = 256;
-	const u32 NumBds = u32_ceil(BufferLength, MaxBurstLength);
+	const u32 NumBds = RoundUpDivide(BufferLength, MaxBurstLength);
 	SgInitialize(&Dma, MaxBurstLength, NumBds, RX0_BD_SPACE_BASE, RX0_BD_SPACE_HIGH, (UINTPTR)RxBuffer, 0);
 
 	// Flush the cache before any transfer
@@ -284,7 +222,8 @@ int main () {
 	u32 ProcessedBdCount = XAxiDma_BdRingFromHw(RingPtr, XAXIDMA_ALL_BDS, &BdPtr);
 	XAxiDma_BdRingFree(RingPtr, ProcessedBdCount, BdPtr);
 	BdCurPtr = BdPtr;
-	for (u32 i = 0; i < 4; i++) {
+	BdCurPtr = RingPtr->FreeHead; // this is kind of weird. should probably find out why this value isn't the one getting returned from BdRingFree
+	for (u32 i = 0; i < NumBds; i++) {
 		Xil_DCacheInvalidateRange((UINTPTR)BdCurPtr, XAXIDMA_BD_NUM_WORDS * sizeof(u32));
 		XAxiDma_DumpBd(BdCurPtr);
 		BdCurPtr = (XAxiDma_Bd *)XAxiDma_BdRingNext(RingPtr, BdCurPtr);
@@ -292,7 +231,9 @@ int main () {
 		// check the tlast bit
 		if (Status & XAXIDMA_BD_STS_RXEOF_MASK) {
 			u32 ActualLength = XAxiDma_BdGetActualLength(BdCurPtr, (MaxBurstLength*sizeof(u32)*2)-1);
-			xil_printf("Last beat found: %08x + %08x\r\n",  XAxiDma_BdGetBufAddr(BdCurPtr), ActualLength);
+			xil_printf("Last beat found:\r\n");
+			xil_printf("  BD base address: %08x\r\n", XAxiDma_BdGetBufAddr(BdCurPtr));
+			xil_printf("  BD actual length: %08x\r\n", ActualLength);
 			BufferHeadIndex = (((u32)XAxiDma_BdGetBufAddr(BdCurPtr) + (u32)(ActualLength) - (u32)RxBuffer) / sizeof(u32)) % BufferLength;
 		}
 	}
@@ -300,6 +241,7 @@ int main () {
 	TriggerDetected = XGpio_DiscreteRead(&TriggerConfigGpio, TRIGGER_CONFIG_DETECTED_CHANNEL);
 
 	xil_printf("Buffer base address: %08x\r\n", RxBuffer);
+	xil_printf("Length of buffer (words): %d\r\n", BufferLength);
 	xil_printf("Index of buffer head: %d\r\n", BufferHeadIndex);
 	xil_printf("Trigger position: %d\r\n", TriggerPosition);
 	xil_printf("Index of trigger position: %d\r\n", (BufferHeadIndex + TriggerPosition) % BufferLength);
@@ -317,12 +259,9 @@ int main () {
 	u32 errors = 0;
 	u32 FirstValue = RxBuffer[BufferHeadIndex];
 	for (u32 i = 0; i < BufferLength; i++) {
-		if (i == TriggerPosition) {
-			xil_printf("> ");
-		}
 		u32 index = (i + BufferHeadIndex) % BufferLength;
-		xil_printf("RxBuffer at %08x: %d; expected %d\r\n", (u32)RxBuffer + index*sizeof(u32), RxBuffer[index], FirstValue + i);
 		if (RxBuffer[index] != FirstValue + i) {
+			xil_printf("RxBuffer at %08x: %d; expected %d\r\n", (u32)RxBuffer + index*sizeof(u32), RxBuffer[index], FirstValue + i);
 			errors++;
 		}
 	}
