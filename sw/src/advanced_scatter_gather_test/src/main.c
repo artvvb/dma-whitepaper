@@ -39,13 +39,21 @@ void InitializeGpio (XGpio *InstPtr, const u32 DeviceId) {
 
 #define RoundUpDivide(a, b) ((a / b) + (a % b != 0))
 
-u32 *InitializeBuffer (XAxiDma *InstPtr, u32 BufferLengthBytes) {
-	u32 *RxBuffer = malloc(BufferLengthBytes);
-	memset(RxBuffer, 0, BufferLengthBytes);
+void AllocateBuffer (XAxiDma *InstPtr, u32 BufferLengthBytes, u32 **BufferPtr, u32 **BdSpacePtr) {
+	*BufferPtr = malloc(BufferLengthBytes);
+	memset(*BufferPtr, 0, BufferLengthBytes);
 
+//	const u32 BytesPerBlock = 256;
+//	u32 NumBds = RoundUpDivide(BufferLengthBytes, BytesPerBlock);
+//	u32 BdSpaceBytes = XAxiDma_BdRingMemCalc(XAXIDMA_BD_MINIMUM_ALIGNMENT, NumBds);
+//	u32 *BdSpace = malloc(BdSpaceBytes);
 	// initialize bd ring
 
-	return RxBuffer;
+}
+
+void DeallocateBuffer (u32 **BufferPtr, u32 **BdSpacePtr) {
+	if (*BufferPtr) free(*BufferPtr);
+	if (*BdSpacePtr) free(*BdSpacePtr);
 }
 
 void SgInitialize (XAxiDma *instptr, u32 MaxBurstLengthBytes, u32 num_bds, u32 bd_space_base, u32 bd_space_high, UINTPTR buffer_base, u32 stride) {
@@ -123,7 +131,6 @@ void SgInitialize (XAxiDma *instptr, u32 MaxBurstLengthBytes, u32 num_bds, u32 b
 	}
 }
 
-
 void SgStartReceiveTransfer (XAxiDma *InstPtr) {
 	XAxiDma_BdRing *RingPtr;
 	RingPtr = XAxiDma_GetRxRing(InstPtr);
@@ -183,7 +190,9 @@ int main () {
 	const u32 TriggerPosition = 200;
 
 	// Initialize the buffer for receiving data from PL
-	u32 *RxBuffer = InitializeBuffer(&Dma, BufferLength * sizeof(u32));
+	u32 *RxBuffer = NULL;
+	u32 *RxBdSpace = NULL;
+	AllocateBuffer(&Dma, BufferLength * sizeof(u32), &RxBuffer, &RxBdSpace);
 
 	// Set up the Dma transfer
 	const u32 MaxBurstLengthBytes = 256;
@@ -214,7 +223,7 @@ int main () {
 	// Apply a manual trigger
 //	usleep(1);
 	u32 trigtime = 0;
-	while (trigtime++ < 100);
+	while (trigtime++ < 1000);
 	XGpio_DiscreteWrite(&ManualTriggerGpio, MANUAL_TRIGGER_CHANNEL, 0x1);
 
 	// wait for trigger hardware to go idle
@@ -234,6 +243,7 @@ int main () {
 	u32 TriggerDetected = TriggerGetDetected(&Trig);
 
 	xil_printf("Buffer base address: %08x\r\n", RxBuffer);
+	xil_printf("Buffer high address: %08x\r\n", ((u32)RxBuffer) + ((BufferLength-1) * sizeof(u32)));
 	xil_printf("Length of buffer (words): %d\r\n", BufferLength);
 	xil_printf("Index of buffer head: %d\r\n", BufferHeadIndex);
 	xil_printf("Trigger position: %d\r\n", TriggerPosition);
@@ -261,6 +271,9 @@ int main () {
 	if (errors == 0) {
 		xil_printf("All RxBuffer data matched!\r\n");
 	}
+
+	// Clean up allocated memory
+	DeallocateBuffer(&RxBuffer, &RxBdSpace);
 
 	xil_printf("done\r\n");
 }
