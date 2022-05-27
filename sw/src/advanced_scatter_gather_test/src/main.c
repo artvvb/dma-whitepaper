@@ -4,16 +4,13 @@
 #include "xil_printf.h"
 #include "sleep.h"
 #include "trigger.h"
+#include "stream_source.h"
 
 #define DMA_ID XPAR_ADVANCED_SCATTER_GATHER_0_AXI_DMA_1_DEVICE_ID
 #define DMA_BURST_SIZE XPAR_ADVANCED_SCATTER_GATHER_0_AXI_DMA_1_S2MM_BURST_SIZE
 #define DMA_DATA_WIDTH XPAR_ADVANCED_SCATTER_GATHER_0_AXI_DMA_1_M_AXI_S2MM_DATA_WIDTH
 
-
 #define TRAFFIC_CTRL_ID XPAR_STREAM_SOURCE_TO_ADVANCED_SCATTER_GATHER_0_CTRL_0_DEVICE_ID
-#define TRAFFIC_CTRL_FREERUN_BIT 2
-#define TRAFFIC_CTRL_ENABLE_BIT 1
-#define TRAFFIC_CTRL_CHANNEL 1
 
 #define MANUAL_TRIGGER_ID XPAR_ADVANCED_SCATTER_GATHER_TRIGGER_0_MANUAL_TRIGGER_0_DEVICE_ID
 #define MANUAL_TRIGGER_CHANNEL 1
@@ -179,13 +176,14 @@ u32 *FindStartOfBuffer (XAxiDma *InstPtr, u32 NumBds, u32 MaxBurstLengthBytes) {
 int main () {
 	// Initialize device drivers
 	XAxiDma Dma;
-	XGpio TrafficCtrlGpio;
 	XGpio ManualTriggerGpio;
 	TriggerController Trig;
+	StreamSource TrafficGen;
 
 	TriggerControllerInitialize(&Trig, TRIGGER_CONFIG_ID, TRIGGER_CTRL_ID, TRIGGER_COUNTER_CONFIG_ID);
 	InitializeDma(&Dma, DMA_ID);
-	InitializeGpio(&TrafficCtrlGpio, TRAFFIC_CTRL_ID);
+	StreamSourceInitialize(&TrafficGen, TRAFFIC_CTRL_ID);
+
 	InitializeGpio(&ManualTriggerGpio, MANUAL_TRIGGER_ID);
 
 	// Define the acquisition window
@@ -220,7 +218,7 @@ int main () {
 	TriggerStart(&Trig);
 
 	// Enable the traffic generator
-	XGpio_DiscreteWrite(&TrafficCtrlGpio, TRAFFIC_CTRL_CHANNEL, TRAFFIC_CTRL_ENABLE_BIT);
+	StreamSourceSetEnable(&TrafficGen, 1);
 
 	// Wait for the receive transfer to complete
 
@@ -260,7 +258,7 @@ int main () {
 	xil_printf("Transfer done\r\n");
 
 	// The traffic generator counters reset when enable is deasserted
-	XGpio_DiscreteWrite(&TrafficCtrlGpio, TRAFFIC_CTRL_CHANNEL, 0);
+	StreamSourceSetEnable(&TrafficGen, 0);
 
 	// Check the buffer to see if data increments like expected
 	u32 errors = 0;
