@@ -25,15 +25,6 @@ void InitializeGpio (XGpio *InstPtr, const u32 DeviceId) {
 	XGpio_CfgInitialize(InstPtr, GpioCfgPtr, GpioCfgPtr->BaseAddress);
 }
 
-void DeallocateBuffer (u32 **BufferPtr, u32 **BdSpacePtr) {
-	if (*BufferPtr) {
-		free(*BufferPtr);
-	}
-	if (*BdSpacePtr) {
-		free(*BdSpacePtr);
-	}
-}
-
 int main () {
 	// Initialize device drivers
 	S2mmTransferHierarchy S2mm;
@@ -71,7 +62,7 @@ int main () {
 
 	// Start up the input pipeline from back to front
 	// Start the DMA receive
-	S2mmStartTransfer(&S2mm);
+	S2mmStartCyclicTransfer(&S2mm);
 
 	// Start the trigger hardware
 	TriggerStart(&Trig);
@@ -82,9 +73,9 @@ int main () {
 	// Wait for the receive transfer to complete
 
 	// Apply a manual trigger
-//	usleep(1);
-	u32 trigtime = 0;
-	while (trigtime++ < 1200);
+	usleep(1);
+//	u32 trigtime = 0;
+//	while (trigtime++ < 1200);
 	XGpio_DiscreteWrite(&ManualTriggerGpio, MANUAL_TRIGGER_CHANNEL, 0x1);
 
 	// wait for trigger hardware to go idle
